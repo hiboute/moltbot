@@ -627,20 +627,17 @@ export async function applyAuthChoiceApiProviders(
       }
     }
 
-    if (!hasCredential) {
+    // Helper function to prompt for API key
+    const promptForApiKey = async () => {
       const key = await params.prompter.text({
         message: "Enter LiteLLM API key",
         validate: validateApiKeyInput,
       });
-      apiKey = normalizeApiKeyInput(String(key));
-      await setLitellmApiKey(apiKey, params.agentDir);
-    }
+      return normalizeApiKeyInput(String(key));
+    };
 
-    // Check for pre-provided base URL via CLI option (--litellm-base-url)
-    let normalizedBaseUrl: string;
-    if (params.opts?.litellmBaseUrl) {
-      normalizedBaseUrl = params.opts.litellmBaseUrl.trim();
-    } else {
+    // Helper function to prompt for base URL
+    const promptForBaseUrl = async () => {
       const defaultBaseUrl = process.env.LITELLM_BASE_URL ?? "http://localhost:4000";
       const baseUrl = await params.prompter.text({
         message: "Enter LiteLLM base URL",
@@ -656,7 +653,20 @@ export async function applyAuthChoiceApiProviders(
           }
         },
       });
-      normalizedBaseUrl = String(baseUrl).trim();
+      return String(baseUrl).trim();
+    };
+
+    if (!hasCredential) {
+      apiKey = await promptForApiKey();
+      await setLitellmApiKey(apiKey, params.agentDir);
+    }
+
+    // Check for pre-provided base URL via CLI option (--litellm-base-url)
+    let normalizedBaseUrl: string;
+    if (params.opts?.litellmBaseUrl) {
+      normalizedBaseUrl = params.opts.litellmBaseUrl.trim();
+    } else {
+      normalizedBaseUrl = await promptForBaseUrl();
     }
 
     // Try to fetch available models from LiteLLM
@@ -794,20 +804,25 @@ export async function applyAuthChoiceApiProviders(
       }
 
       if (action === "retry-apikey") {
-        // Re-prompt for API key
-        const key = await params.prompter.text({
-          message: "Enter LiteLLM API key",
-          validate: validateApiKeyInput,
-        });
-        apiKey = normalizeApiKeyInput(String(key));
+        // Re-prompt for API key and retry
+        apiKey = await promptForApiKey();
         await setLitellmApiKey(apiKey, params.agentDir);
-
-        // Retry the entire LiteLLM flow by returning null and letting the caller retry
-        throw new Error("Please try the LiteLLM setup again with the new API key");
+        // Retry fetch by recursively calling this function
+        return await applyAuthChoiceApiProviders({ ...params, authChoice: "litellm-api-key" });
       }
 
       if (action === "retry-baseurl") {
-        throw new Error("Please restart the setup and provide the correct base URL");
+        // Re-prompt for base URL and retry the entire flow
+        // This ensures we go through the full fetch process again with the new URL
+        const newParams = {
+          ...params,
+          authChoice: "litellm-api-key" as const,
+          opts: {
+            ...params.opts,
+            litellmBaseUrl: undefined, // Clear the CLI-provided URL so we can prompt
+          },
+        };
+        return await applyAuthChoiceApiProviders(newParams);
       }
 
       // Manual model entry
